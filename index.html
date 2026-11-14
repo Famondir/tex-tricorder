@@ -328,13 +328,13 @@ const freqHue = f => { const m = 69 + 12 * Math.log2(f / 440); const pc = ((Math
 
 /* ================= Befunde (Bio-Modus) ================= */
 const BEFUNDE = [
-  { id:'gesund',  title:'GEWEBE STABIL',  sub:'C-Dur · tiefes Blau',            hue:232, hue2:268, notes:[60,64,67,72],       det:[0,0,0,0],     wave:'triangle', noise:0,   trem:0,   depth:0 },
+  { id:'gesund',  title:'GEWEBE STABIL',  sub:'C-Dur · tiefes Blau',            hue:232, hue2:268, notes:[48,55,64,67],       det:[0,0,0,0],     wave:'sine', soft:true, noise:0, trem:.2, depth:.2, arp:[72,76,79,84,79,76], arpRate:.34 },
   { id:'gift',    title:'TOXIN',          sub:'verstimmt · kratziges Gelb',     hue:56,  hue2:42,  notes:[60,64,66,71],       det:[0,38,-27,52], wave:'sawtooth', noise:.35, trem:0,   depth:0, sat:75 },
   { id:'infekt',  title:'ERREGER',        sub:'flackerndes Gelb · pulsiert',    hue:54,  hue2:78,  notes:[60,61,67,68],       det:[0,14,0,-18],  wave:'sawtooth', noise:.15, trem:6.5, depth:.9 },
   { id:'trauma',  title:'WUNDE',          sub:'schrilles Rot',                  hue:356, hue2:14,  notes:[84,85,91],          det:[0,0,25],      wave:'square',   noise:.1,  trem:11,  depth:.3 },
   { id:'fieber',  title:'FIEBER',         sub:'Orange · zitterndes Vibrato',    hue:24,  hue2:44,  notes:[57,60,64,67],       det:[0,0,0,0],     wave:'triangle', noise:.05, trem:0,   depth:0, vib:5.5, vibDepth:40 },
-  { id:'sediert', title:'SEDIERT',        sub:'warmes Indigo · Cmaj9',          hue:248, hue2:282, notes:[48,55,59,64,74],    det:[0,0,0,0],     wave:'sine',     noise:0,   trem:.4,  depth:.35 },
-  { id:'fremd',   title:'UNBEK. SPEZIES', sub:'fremde Stimmung · Türkis/Violett', hue:174, hue2:290, notes:[60,63.5,66.9,70.2], det:[0,0,0,0],   wave:'sine',     noise:.03, trem:0,   depth:0, vib:.7, vibDepth:25 },
+  { id:'sediert', title:'SEDIERT',        sub:'warmes Indigo · Cmaj9',          hue:248, hue2:282, notes:[48,55,59,64,74],    det:[0,0,0,0],     wave:'sine', soft:true, noise:0, trem:.3, depth:.3, arp:[71,76,79,83,86,83,79,76], arpRate:.55 },
+  { id:'fremd',   title:'UNBEK. SPEZIES', sub:'fremde Stimmung · Türkis/Violett', hue:174, hue2:290, notes:[48,51.5,54.9,58.2], det:[0,0,0,0],   wave:'sine', soft:true, noise:.03, trem:0, depth:0, vib:.7, vibDepth:25, arp:[72,75.5,78.9,82.2,85.7,82.2], arpRate:.42 },
   { id:'panik',   title:'PANIK',          sub:'zerfasert · schrill',            hue:328, hue2:60,  notes:[72,75,78,83,86],    det:[0,20,-30,10,40], wave:'square', noise:.2, trem:9, depth:.4, chaos:.45 },
   { id:'overload',title:'ÜBERSTEUERUNG',  sub:'zu laut · zu grell · Komplikation!', hue:0, hue2:0, notes:[50,61,73,80,90],  det:[0,30,-40,15,-20], wave:'sawtooth', noise:.6, trem:14, depth:.7, chaos:1, rainbow:true },
 ];
@@ -350,7 +350,15 @@ const Synth = {
     const comp = C.createDynamicsCompressor(); this.master.connect(comp).connect(C.destination);
     this.an = C.createAnalyser(); this.an.fftSize = 2048; this.an.smoothingTimeConstant = .75; this.an.connect(this.master);
     this.trem = C.createGain(); this.trem.gain.value = 1; this.trem.connect(this.an);
-    this.bus = C.createGain(); this.bus.gain.value = .9; this.bus.connect(this.trem);
+    this.bus = C.createGain(); this.bus.gain.value = .9;
+    // Klangfarbe: Tiefpass (weich vs. grell) + kleiner Hall
+    this.lp = C.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = 9000; this.lp.Q.value = .5;
+    this.bus.connect(this.lp).connect(this.trem);
+    const ir = C.createBuffer(2, C.sampleRate * 2.4, C.sampleRate);
+    for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 3); }
+    this.conv = C.createConvolver(); this.conv.buffer = ir;
+    this.wet = C.createGain(); this.wet.gain.value = .3;
+    this.lp.connect(this.conv).connect(this.wet).connect(this.trem);
     this.lfo = C.createOscillator(); this.lfoAmt = C.createGain(); this.lfoAmt.gain.value = 0;
     this.lfo.connect(this.lfoAmt).connect(this.trem.gain); this.lfo.start();
     this.vib = C.createOscillator(); this.vibAmt = C.createGain(); this.vibAmt.gain.value = 0;
@@ -372,12 +380,16 @@ const Synth = {
   apply(p, level = 1) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime, n = p.notes.length;
+    this.cur = p;
     const harsh = (p.wave === 'square' || p.wave === 'sawtooth') ? .45 : 1;
+    const pad = p.arp ? .45 : p.soft ? .75 : 1;
+    this.lp.frequency.setTargetAtTime(p.soft ? 1300 : 9000, t, .1);
+    this.wet.gain.setTargetAtTime(p.soft ? .45 : .2, t, .1);
     this.voices.forEach((v, i) => {
       if (i < n) {
         if (v.o.type !== p.wave) v.o.type = p.wave;
         v.o.frequency.setTargetAtTime(mtof(p.notes[i]) * Math.pow(2, (p.det[i] || 0) / 1200), t, .04);
-        v.g.gain.setTargetAtTime(.24 / Math.sqrt(n) * level * harsh, t, .08);
+        v.g.gain.setTargetAtTime(.24 / Math.sqrt(n) * level * harsh * pad, t, p.soft ? .4 : .08);
       } else v.g.gain.setTargetAtTime(0, t, .08);
     });
     this.ng.gain.setTargetAtTime((p.noise || 0) * .22 * level, t, .08);
@@ -394,8 +406,19 @@ const Synth = {
     this.voices.forEach(v => { if (Math.random() < amount) v.o.frequency.setTargetAtTime(mtof(50 + Math.random() * 46), t, .015); });
     this.nf.frequency.setTargetAtTime(800 + Math.random() * 6000, t, .02);
   },
+  bell(midi, vol = .11, dur = 1.8) { // Spieluhr/Rhodes-artiger Ton
+    if (!this.ctx) return;
+    const C = this.ctx, t = C.currentTime;
+    [[1, vol, dur], [3, vol * .12, .35], [2, vol * .2, .8]].forEach(([r, v, d]) => {
+      const o = C.createOscillator(), g = C.createGain();
+      o.type = 'sine'; o.frequency.value = mtof(midi) * r;
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + .006); g.gain.exponentialRampToValueAtTime(.0001, t + d);
+      o.connect(g).connect(this.lp); o.start(t); o.stop(t + d + .05);
+    });
+  },
   silence() {
     if (!this.ctx) return;
+    this.cur = null;
     const t = this.ctx.currentTime;
     this.voices.forEach(v => v.g.gain.setTargetAtTime(0, t, .06));
     this.ng.gain.setTargetAtTime(0, t, .06);
@@ -502,7 +525,7 @@ const Pulse = {
     const now1 = r > 45 && r >= g * 1.05 && r > b * 1.4;
     this.miss = now1 ? 0 : this.miss + 1;
     this.finger = now1 || (this.finger && this.miss < 10);
-    if (!this.finger) { this.buf = []; this.peaks = []; this.sig = []; this.bpm = 0; this.ch = null; return; }
+    if (!this.finger) { this.buf = []; this.peaks = []; this.sig = []; this.bpm = 0; this.irr = 0; this.ch = null; return; }
     if (this.ch == null) this.ch = r > 230 ? 1 : 0; // Rot übersteuert -> Grünkanal trägt den Puls
     this.buf.push({ t: now, v: this.ch ? g : r });
     while (this.buf.length && now - this.buf[0].t > 10) this.buf.shift();
@@ -511,7 +534,7 @@ const Pulse = {
   analyze(now) {
     const b = this.buf, n = b.length; if (n < 45) { this.sig = []; return; }
     const dur = b[n - 1].t - b[0].t, fps = n / Math.max(dur, .1);
-    const w = Math.max(2, Math.round(fps * .5)), sm = Math.max(1, Math.round(fps * .06));
+    const w = Math.max(2, Math.round(fps * .5)), sm = Math.max(1, Math.round(fps * .08));
     const s = new Array(n).fill(0);
     for (let i = 0; i < n; i++) {
       let a = 0, ac = 0, m = 0, mc = 0;
@@ -520,24 +543,36 @@ const Pulse = {
       s[i] = -(m / mc - a / ac); // Blut dunkelt das Rot ab -> invertieren
     }
     let sd = 0; for (const x of s) sd += x * x; sd = Math.sqrt(sd / n);
+    // Sperrzeit nach einem Schlag: verhindert, dass der dikrote Nachbuckel als eigener Schlag zählt
+    const refr = this.bpm ? Math.max(.33, 60 / this.bpm * .62) : .42;
     const peaks = [];
     for (let i = 2; i < n - 2; i++) {
-      if (s[i] > sd * .35 && s[i] >= s[i - 1] && s[i] >= s[i - 2] && s[i] > s[i + 1] && s[i] > s[i + 2]) {
-        if (!peaks.length || b[i].t - peaks[peaks.length - 1] > .33) peaks.push(b[i].t);
+      if (s[i] > sd * .5 && s[i] >= s[i - 1] && s[i] >= s[i - 2] && s[i] > s[i + 1] && s[i] > s[i + 2]) {
+        // Spitze zwischen den Frames interpolieren (bei 30 fps sonst ±33 ms Zeitrauschen)
+        const den = s[i - 1] - 2 * s[i] + s[i + 1];
+        const off = den ? clamp(.5 * (s[i - 1] - s[i + 1]) / den, -.5, .5) : 0;
+        const tp = b[i].t + off * (b[i + 1].t - b[i - 1].t) / 2;
+        const last = peaks[peaks.length - 1];
+        if (last == null || tp - last.t > refr) peaks.push({ t: tp, a: s[i] });
+        else if (s[i] > last.a) peaks[peaks.length - 1] = { t: tp, a: s[i] }; // höhere Spitze gewinnt
       }
     }
     this.sig = s.map((x, i) => ({ t: b[i].t, v: x / (sd || 1) }));
-    this.peaks = peaks;
-    const iv = []; for (let i = 1; i < peaks.length; i++) iv.push(peaks[i] - peaks[i - 1]);
+    this.peaks = peaks.map(p => p.t);
+    const iv = []; for (let i = 1; i < peaks.length; i++) iv.push(peaks[i].t - peaks[i - 1].t);
     if (iv.length >= 4) {
       const sorted = [...iv].sort((x, y) => x - y), med = sorted[sorted.length >> 1];
-      const good = iv.filter(x => Math.abs(x - med) < med * .45);
-      const mean = good.reduce((x, y) => x + y, 0) / good.length;
-      const sdv = Math.sqrt(iv.reduce((x, y) => x + (y - mean) ** 2, 0) / iv.length);
-      this.bpm = 60 / mean; this.irr = sdv / mean;
+      const good = iv.filter(x => Math.abs(x - med) < med * .3); // verpasste/doppelte Schläge raus
+      if (good.length >= 3) {
+        const mean = good.reduce((x, y) => x + y, 0) / good.length;
+        const dev = good.map(x => Math.abs(x - med)).sort((x, y) => x - y);
+        const irrNow = dev[dev.length >> 1] * 1.4826 / med; // robuste Streuung (MAD)
+        this.bpm = 60 / mean;
+        this.irr = this.irr ? this.irr * .9 + irrNow * .1 : irrNow;
+      }
     }
-    const lp = peaks[peaks.length - 1];
-    if (lp && lp > this.lastBlip && now - lp < .4) { this.lastBlip = lp; this.onBeat?.(); }
+    const lp = this.peaks[this.peaks.length - 1];
+    if (lp && lp > this.lastBlip + .2 && now - lp < .4) { this.lastBlip = lp; this.onBeat?.(); }
   }
 };
 
@@ -662,25 +697,28 @@ function profileForPulse() {
   if (!Pulse.finger) return null;
   if (!b) return { title:'MESSE …', sub:'still halten', hue:200, hue2:232, notes:[60,67], det:[0,0], wave:'sine', noise:0, trem:0, depth:0 };
   const t = Math.round(b) + ' /min';
-  if (Pulse.irr > .18) return { title:t + ' · UNRUHIG', sub:'Arrhythmie? · verstimmtes Gelb', hue:54, hue2:40, notes:[60,64,66], det:[0,30,-20], wave:'sawtooth', noise:.2, trem:0, depth:0 };
-  if (b < 50)  return { title:t, sub:'langsam · tiefes Indigo', hue:252, hue2:280, notes:[48,55,60], det:[0,0,0], wave:'sine', noise:0, trem:0, depth:0 };
-  if (b <= 100) return { title:t, sub:'Sinusrhythmus · C-Dur · Tiefblau', hue:232, hue2:268, notes:[60,64,67,72], det:[0,0,0,0], wave:'triangle', noise:0, trem:0, depth:0 };
-  if (b <= 130) return { title:t, sub:'schnell · Orange', hue:26, hue2:44, notes:[62,66,69], det:[0,0,0], wave:'triangle', noise:.05, trem:0, depth:0 };
+  if (Pulse.irr > .15) return { title:t + ' · UNRUHIG', sub:'Arrhythmie? · verstimmtes Gelb', hue:54, hue2:40, notes:[60,64,66], det:[0,30,-20], wave:'sawtooth', noise:.2, trem:0, depth:0 };
+  if (b < 50)  return { title:t, sub:'langsam · tiefes Indigo', hue:252, hue2:280, notes:[43,50,55,59], det:[0,0,0,0], wave:'sine', soft:true, noise:0, trem:0, depth:0 };
+  if (b <= 100) return { title:t, sub:'Sinusrhythmus · C-Dur · Tiefblau', hue:232, hue2:268, notes:[48,55,64,67], det:[0,0,0,0], wave:'sine', soft:true, noise:0, trem:0, depth:0 };
+  if (b <= 130) return { title:t, sub:'schnell · Orange', hue:26, hue2:44, notes:[50,57,62,66], det:[0,0,0,0], wave:'triangle', soft:true, noise:.03, trem:0, depth:0 };
   return { title:t, sub:'rast · schrilles Rot', hue:356, hue2:14, notes:[72,73,79], det:[0,0,15], wave:'square', noise:.1, trem:0, depth:0 };
 }
 function profileForMotion(r) {
   if (!r) return null;
   const { rms, freq } = r, det = clamp(rms * 25, 0, 60);
-  if (rms < .15) return { title:'RUHIGE HAND', sub:'C-Dur · Tiefblau · Chirurgen-tauglich', hue:232, hue2:268, notes:[60,64,67,72], det:[0,0,0,0], wave:'triangle', noise:0, trem:0, depth:0 };
-  if (rms < .5 && freq >= 6 && freq <= 13) return { title:'PHYSIOL. TREMOR ' + freq.toFixed(1) + ' Hz', sub:'normal · Blau-Türkis · OP-tauglich', hue:205, hue2:240, notes:[60,64,67,72], det:[0,4,-3,0], wave:'triangle', noise:0, trem:freq, depth:.15 };
-  if (rms < .5) return { title:'FAST RUHIG', sub:'Türkis · leises Schwanken', hue:185, hue2:232, notes:[60,64,67], det:[0,5,-5], wave:'triangle', noise:0, trem:0, depth:0 };
+  if (rms < .15) return { title:'RUHIGE HAND', sub:'C-Dur · Tiefblau · Chirurgen-tauglich', hue:232, hue2:268, notes:[48,55,64,67], det:[0,0,0,0], wave:'sine', soft:true, noise:0, trem:0, depth:0, arp:[72,76,79,84,79,76], arpRate:.34 };
+  if (rms < .5 && freq >= 6 && freq <= 13) return { title:'PHYSIOL. TREMOR ' + freq.toFixed(1) + ' Hz', sub:'normal · Blau-Türkis · OP-tauglich', hue:205, hue2:240, notes:[48,55,64,67], det:[0,4,-3,0], wave:'sine', soft:true, noise:0, trem:freq, depth:.12 };
+  if (rms < .5) return { title:'FAST RUHIG', sub:'Türkis · leises Schwanken', hue:185, hue2:232, notes:[48,55,64,67], det:[0,6,-6,0], wave:'sine', soft:true, noise:0, trem:0, depth:0 };
   if (rms < 2.5 && freq >= 3 && freq <= 14) return { title:'TREMOR ' + freq.toFixed(1) + ' Hz', sub:'verstimmtes Gelb', hue:54, hue2:80, notes:[60,64,67], det:[0, det, -det], wave:'sawtooth', noise:clamp(rms / 4, 0, .3), trem:freq, depth:.6 };
   if (rms < 2.5) return { title:'UNRUHIG', sub:'Grün-Gelb · leicht verstimmt', hue:88, hue2:56, notes:[60,64,67], det:[0, det / 2, -det / 2], wave:'triangle', noise:.05, trem:0, depth:0 };
   return { title:'ERSCHÜTTERUNG', sub:'schrilles Rot', hue:356, hue2:20, notes:[72,73,78], det:[0,20,-30], wave:'square', noise:clamp(rms / 15, .1, .5), trem:12, depth:.5 };
 }
 
+let lastArp = 0, arpIdx = 0;
 function update(t) {
   const id = MODES[mode].id;
+  const ap = Synth.cur;
+  if (scanning && ap && ap.arp && t - lastArp > ap.arpRate) { Synth.bell(ap.arp[arpIdx++ % ap.arp.length]); lastArp = t; }
   if (id === 'bio') {
     const p = BEFUNDE[befund];
     if (scanning) {
