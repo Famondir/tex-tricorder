@@ -277,7 +277,7 @@ video,#probe{position:absolute; width:1px; height:1px; opacity:0; pointer-events
   <ul>
     <li><b>A</b> – Scan starten / stoppen</li>
     <li><b>◀ ▶</b> – Modus wechseln</li>
-    <li><b>▲ ▼</b> – Befund wählen (Bio-Modus)</li>
+    <li><b>▲ ▼</b> – Befund wählen (BIO) · Blitz an/aus (PULS)</li>
     <li><b>B</b> – Ton an / aus</li>
     <li>Tastatur: Pfeile, <kbd>X</kbd>/<kbd>Enter</kbd> = A, <kbd>Z</kbd> = B, <kbd>H</kbd> = Hilfe</li>
   </ul>
@@ -286,8 +286,8 @@ video,#probe{position:absolute; width:1px; height:1px; opacity:0; pointer-events
   <ul>
     <li><b>BIO</b> – Szenen-Modus für den Spieltisch. Befund wählen, A drücken, das Gerät „singt“ ihn.</li>
     <li><b>AKUSTIK</b> – echtes Mikrofon. Jeder Ton bekommt seine Synästhesie-Farbe (C = Tiefblau … A = Gelb).</li>
-    <li><b>PULS</b> – echter Puls. Fingerkuppe ganz auf Rückkamera <i>und</i> Blitz legen, still halten (~10 s).</li>
-    <li><b>BEWEGUNG</b> – Beschleunigungssensor. Ruhige Hand = Blau, Zittern = verstimmtes Gelb, Schütteln = Rot.</li>
+    <li><b>PULS</b> – echter Puls. Fingerkuppe locker über Hauptkamera <i>und</i> Blitz legen (das Licht streut durchs Gewebe in die Linse), still halten (~10 s). Die Mini-Vorschau soll gleichmäßig rot leuchten. ▲▼ schaltet den Blitz; ohne Blitz Finger gegen helles Licht halten.</li>
+    <li><b>BEWEGUNG</b> – Beschleunigungssensor. Ruhige Hand = Blau, physiologischer Tremor (8–12 Hz, hat jeder) = Blau-Türkis, echtes Zittern = verstimmtes Gelb, Schütteln = Rot.</li>
   </ul>
 
   <h3>BEFUNDE (BIO)</h3>
@@ -310,7 +310,8 @@ video,#probe{position:absolute; width:1px; height:1px; opacity:0; pointer-events
 const TAU = Math.PI * 2;
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const hsl = (h, s = 95, l = 60, a = 1) => `hsla(${h.toFixed(1)},${s}%,${l}%,${a})`;
+const fin = (v, d) => Number.isFinite(v) ? v : d;
+const hsl = (h, s = 95, l = 60, a = 1) => `hsla(${fin(h, 0).toFixed(1)},${fin(s, 95)}%,${fin(l, 60)}%,${clamp(fin(a, 1), 0, 1)})`;
 const lerpHue = (a, b, k) => { const d = ((b - a + 540) % 360) - 180; return (a + d * k + 360) % 360; };
 const store = {
   get(k, d) { try { const v = localStorage.getItem('texcorder.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -474,12 +475,14 @@ const Pulse = {
     this.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 30 } } });
     this.video.srcObject = this.stream; await this.video.play();
     this.track = this.stream.getVideoTracks()[0]; this.torch = false;
-    try {
-      const caps = this.track.getCapabilities ? this.track.getCapabilities() : {};
-      if (caps.torch) { await this.track.applyConstraints({ advanced: [{ torch: true }] }); this.torch = true; }
-    } catch {}
-    this.buf = []; this.peaks = []; this.bpm = 0; this.irr = 0;
+    await this.setTorch(true);
+    this.buf = []; this.peaks = []; this.bpm = 0; this.irr = 0; this.ch = null; this.miss = 0; this.rgb = [0, 0, 0];
     this.pc = this.probe.getContext('2d', { willReadFrequently: true });
+  },
+  async setTorch(on) {
+    if (!this.track) return false;
+    try { await this.track.applyConstraints({ advanced: [{ torch: on }] }); this.torch = on; return true; }
+    catch { return false; }
   },
   stop() {
     try { this.track?.applyConstraints({ advanced: [{ torch: false }] }); } catch {}
@@ -493,10 +496,15 @@ const Pulse = {
     const d = this.pc.getImageData(0, 0, 32, 24).data;
     let r = 0, g = 0, b = 0; const n = d.length / 4;
     for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
-    r /= n; g /= n; b /= n;
-    this.finger = r > 80 && r > g * 1.5 && r > b * 1.5;
-    if (!this.finger) { this.buf = []; this.peaks = []; this.sig = []; this.bpm = 0; return; }
-    this.buf.push({ t: now, v: r });
+    r /= n; g /= n; b /= n; this.rgb = [r, g, b];
+    // Finger = rötliches, durchleuchtetes Bild. Mit Blitz ist Rot oft gesättigt (~255) und Grün auch hell,
+    // daher nur "Rot vorne, Blau deutlich drunter" verlangen.
+    const now1 = r > 45 && r >= g * 1.05 && r > b * 1.4;
+    this.miss = now1 ? 0 : this.miss + 1;
+    this.finger = now1 || (this.finger && this.miss < 10);
+    if (!this.finger) { this.buf = []; this.peaks = []; this.sig = []; this.bpm = 0; this.ch = null; return; }
+    if (this.ch == null) this.ch = r > 230 ? 1 : 0; // Rot übersteuert -> Grünkanal trägt den Puls
+    this.buf.push({ t: now, v: this.ch ? g : r });
     while (this.buf.length && now - this.buf[0].t > 10) this.buf.shift();
     this.analyze(now);
   },
@@ -539,7 +547,7 @@ const Motion = {
     if (typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission) {
       const r = await DeviceMotionEvent.requestPermission(); if (r !== 'granted') throw new Error('Bewegungssensor nicht erlaubt');
     }
-    this.buf = []; this.got = false; window.addEventListener('devicemotion', this.h); this.on = true;
+    this.buf = []; this.got = false; this.rmsS = this.freqS = null; window.addEventListener('devicemotion', this.h); this.on = true;
   },
   stop() { window.removeEventListener('devicemotion', this.h); this.on = false; },
   h(e) {
@@ -562,9 +570,16 @@ const Motion = {
     let vx = 0, vy = 0, vz = 0; for (const p of b) { vx += (p.x - mx) ** 2; vy += (p.y - my) ** 2; vz += (p.z - mz) ** 2; }
     const rms = Math.sqrt((vx + vy + vz) / b.length);
     const ax = vx >= vy && vx >= vz ? 'x' : vy >= vz ? 'y' : 'z', m = { x: mx, y: my, z: mz }[ax];
-    let zc = 0; for (let i = 1; i < b.length; i++) if ((b[i - 1][ax] - m) * (b[i][ax] - m) < 0) zc++;
-    const freq = zc / 2 / (b[b.length - 1].t - b[0].t);
-    return { rms, freq };
+    const dur = b[b.length - 1].t - b[0].t;
+    if (!(dur > .5)) return null;
+    // leicht glätten, sonst zählt Sensorrauschen als Nulldurchgang
+    const sm = b.map((p, i) => ((b[i - 1] || p)[ax] + p[ax] + (b[i + 1] || p)[ax]) / 3 - m);
+    let zc = 0; for (let i = 1; i < sm.length; i++) if (sm[i - 1] * sm[i] < 0) zc++;
+    const freq = zc / 2 / dur;
+    if (!Number.isFinite(rms) || !Number.isFinite(freq)) return null;
+    this.rmsS = this.rmsS == null ? rms : this.rmsS * .7 + rms * .3;
+    this.freqS = this.freqS == null ? freq : this.freqS * .7 + freq * .3;
+    return { rms: this.rmsS, freq: this.freqS };
   }
 };
 
@@ -629,7 +644,13 @@ async function press(k) {
     toast(MODES[mode].name);
     if (scanning) startSensor();
   } else if (k === 'up' || k === 'down') {
-    if (MODES[mode].id !== 'bio') { toast('▲▼ nur im BIO-Modus'); return; }
+    if (MODES[mode].id === 'puls') {
+      if (!Pulse.track) { toast('Erst A drücken'); return; }
+      const ok = await Pulse.setTorch(!Pulse.torch);
+      toast(ok ? (Pulse.torch ? 'BLITZ AN' : 'BLITZ AUS') : 'Blitz nicht steuerbar', ok ? 'var(--yellow)' : 'var(--pink)');
+      return;
+    }
+    if (MODES[mode].id !== 'bio') { toast('▲▼ nur in BIO und PULS'); return; }
     befund = (befund + (k === 'down' ? 1 : -1) + BEFUNDE.length) % BEFUNDE.length; store.set('befund', befund);
     lastKey = ''; Synth.blip(k === 'down' ? 67 : 72, .06, 'square', .07);
   }
@@ -649,8 +670,10 @@ function profileForPulse() {
 }
 function profileForMotion(r) {
   if (!r) return null;
-  const { rms, freq } = r, det = clamp(rms * 60, 0, 60);
-  if (rms < .06) return { title:'RUHIGE HAND', sub:'C-Dur · Tiefblau · Chirurgen-tauglich', hue:232, hue2:268, notes:[60,64,67,72], det:[0,0,0,0], wave:'triangle', noise:0, trem:0, depth:0 };
+  const { rms, freq } = r, det = clamp(rms * 25, 0, 60);
+  if (rms < .15) return { title:'RUHIGE HAND', sub:'C-Dur · Tiefblau · Chirurgen-tauglich', hue:232, hue2:268, notes:[60,64,67,72], det:[0,0,0,0], wave:'triangle', noise:0, trem:0, depth:0 };
+  if (rms < .5 && freq >= 6 && freq <= 13) return { title:'PHYSIOL. TREMOR ' + freq.toFixed(1) + ' Hz', sub:'normal · Blau-Türkis · OP-tauglich', hue:205, hue2:240, notes:[60,64,67,72], det:[0,4,-3,0], wave:'triangle', noise:0, trem:freq, depth:.15 };
+  if (rms < .5) return { title:'FAST RUHIG', sub:'Türkis · leises Schwanken', hue:185, hue2:232, notes:[60,64,67], det:[0,5,-5], wave:'triangle', noise:0, trem:0, depth:0 };
   if (rms < 2.5 && freq >= 3 && freq <= 14) return { title:'TREMOR ' + freq.toFixed(1) + ' Hz', sub:'verstimmtes Gelb', hue:54, hue2:80, notes:[60,64,67], det:[0, det, -det], wave:'sawtooth', noise:clamp(rms / 4, 0, .3), trem:freq, depth:.6 };
   if (rms < 2.5) return { title:'UNRUHIG', sub:'Grün-Gelb · leicht verstimmt', hue:88, hue2:56, notes:[60,64,67], det:[0, det / 2, -det / 2], wave:'triangle', noise:.05, trem:0, depth:0 };
   return { title:'ERSCHÜTTERUNG', sub:'schrilles Rot', hue:356, hue2:20, notes:[72,73,78], det:[0,20,-30], wave:'square', noise:clamp(rms / 15, .1, .5), trem:12, depth:.5 };
@@ -686,9 +709,11 @@ function update(t) {
     if (scanning) {
       Pulse.sample(t);
       const p = profileForPulse();
-      if (!p) { cur = { title:'FINGER AUFLEGEN', sub:Pulse.torch ? 'Kamera + Blitz ganz abdecken' : 'Kamera abdecken, gegen Licht', hue:200, hue2:300, depth:0, trem:0, detail:'' }; if (lastKey !== 'nofinger') { Synth.silence(); lastKey = 'nofinger'; } }
+      const [cr, cg, cb] = Pulse.rgb || [0, 0, 0];
+      const rgbTxt = `R${cr | 0} G${cg | 0} B${cb | 0}${Pulse.torch ? ' · ⚡' : ''}`;
+      if (!p) { cur = { title:'FINGER AUFLEGEN', sub:Pulse.torch ? 'Linse + Blitz mit Fingerkuppe decken · ▲▼ Blitz' : 'Linse decken, gegen helles Licht · ▲▼ Blitz', hue:200, hue2:300, depth:0, trem:0, detail:rgbTxt }; if (lastKey !== 'nofinger') { Synth.silence(); lastKey = 'nofinger'; } }
       else {
-        cur = { ...p, detail: Pulse.bpm ? 'RHYTHMUS ' + Math.round(100 - clamp(Pulse.irr * 300, 0, 100)) + ' %' : '' };
+        cur = { ...p, detail: (Pulse.bpm ? 'RHYTHMUS ' + Math.round(100 - clamp(Pulse.irr * 300, 0, 100)) + ' % · ' : '') + rgbTxt };
         if (lastKey !== 'p' + p.sub + (p.title.startsWith('MESSE') ? 0 : 1)) { Synth.apply(p, .45); lastKey = 'p' + p.sub + (p.title.startsWith('MESSE') ? 0 : 1); }
       }
     } else cur = { title:'PULS', sub:'A: Kamera + Blitz starten', hue:350, hue2:232, depth:0, trem:0, detail:'' };
@@ -697,7 +722,7 @@ function update(t) {
       if (!Motion.got) cur = { title:'KEIN SENSOR?', sub:'Gerät bewegen …', hue:200, hue2:260, depth:0, trem:0, detail:'' };
       else if (t - lastDyn > .2) {
         lastDyn = t; dynProfile = profileForMotion(Motion.analyze(performance.now() / 1000));
-        if (dynProfile) { Synth.apply(dynProfile, .7); cur = { ...dynProfile, detail:'' }; }
+        if (dynProfile) { Synth.apply(dynProfile, .7); cur = { ...dynProfile, detail:'AMPLITUDE ' + Motion.rmsS.toFixed(2) + ' m/s²' }; }
       }
     } else cur = { title:'BEWEGUNG', sub:'A: Beschleunigung messen', hue:120, hue2:200, depth:0, trem:0, detail:'' };
   }
@@ -825,7 +850,12 @@ function drawPPG(x, y, w, h, t) {
     g.stroke(); g.shadowBlur = 0;
     g.fillStyle = hsl(hueAt(1, t), 100, 75);
     for (const pt of Pulse.peaks) { const age = now - pt; if (age > span) continue; g.beginPath(); g.arc(x + w - 8 - (w - 16) * age / span, y + 8, 3, 0, TAU); g.fill(); }
-  } else hint(x, y, w, h, scanning ? '♥ warte auf Signal' : '♥');
+  } else hint(x, y, w, h, !scanning ? '♥' : Pulse.finger ? '♥ messe …' : '♥ kein Finger');
+  if (Pulse.stream) { // Live-Vorschau: rot leuchtend = richtig aufgelegt
+    const pw = Math.min(56, w * .2), ph = pw * .75, px = x + w - pw - 6, py = y + h - ph - 6;
+    g.imageSmoothingEnabled = true; g.drawImage(Pulse.probe, px, py, pw, ph);
+    g.strokeStyle = Pulse.finger ? 'rgba(120,255,140,.9)' : 'rgba(255,80,160,.9)'; g.lineWidth = 1.5; g.strokeRect(px, py, pw, ph);
+  }
   g.restore();
 }
 
@@ -860,7 +890,7 @@ function draw(t) {
   if (!W) return;
   g.clearRect(0, 0, W, H);
   g.fillStyle = '#04050a'; g.fillRect(0, 0, W, H);
-  const flick = cur.depth && cur.trem ? 1 - cur.depth * .45 * (1 + Math.sin(TAU * cur.trem * t)) / 2 : 1;
+  const flick = fin(cur.depth && cur.trem ? 1 - cur.depth * .45 * (1 + Math.sin(TAU * cur.trem * t)) / 2 : 1, 1);
   const P = 6, iw = W - P * 2;
   const hh = Math.max(16, H * .075);
   // Kopfzeile
@@ -919,7 +949,12 @@ function draw(t) {
   });
 }
 
-function frame(ts) { const t = ts / 1000; update(t); draw(t); requestAnimationFrame(frame); }
+function frame(ts) {
+  requestAnimationFrame(frame); // zuerst: ein Fehler darf die Schleife nie mehr stoppen
+  const t = ts / 1000;
+  try { update(t); draw(t); }
+  catch (e) { console.warn(e); try { g.reset?.(); } catch {} resize(); }
+}
 Pulse.onBeat = () => { const p = profileForPulse(); Synth.blip(p && Pulse.bpm > 100 ? 62 : 48, .18, 'sine', .4); Synth.blip(60, .08, 'triangle', .12, .09); haptic(8); };
 
 /* ================= Eingaben ================= */
